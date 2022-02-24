@@ -2,6 +2,8 @@
 require_once __DIR__ . '/vendor/autoload.php';
 
 use MichaelBelgium\YoutubeConverter\Config;
+use Symfony\Component\Process\ExecutableFinder;
+use YoutubeDl\Options;
 use YoutubeDl\YoutubeDl;
 
 header("Content-Type: application/json");
@@ -27,11 +29,15 @@ if(isset($_GET["youtubelink"]) && !empty($_GET["youtubelink"]))
 
     if(Config::DOWNLOAD_MAX_LENGTH > 0 || $exists)
     {
-        $dl = new YoutubeDl(['skip-download' => true]);
-        $dl->setDownloadPath(Config::DOWNLOAD_FOLDER);
-    
         try	{
-            $video = $dl->download($youtubelink);
+            $dl = new YoutubeDl();
+
+            $video = $dl->download(
+                Options::create()
+                    ->skipDownload(true)
+                    ->downloadPath(Config::DOWNLOAD_FOLDER)
+                    ->url($youtubelink)
+            )->getVideos()[0];
     
             if($video->getDuration() > Config::DOWNLOAD_MAX_LENGTH && Config::DOWNLOAD_MAX_LENGTH > 0)
                 throw new Exception("The duration of the video is {$video->getDuration()} seconds while max video length is ".Config::DOWNLOAD_MAX_LENGTH." seconds.");
@@ -44,37 +50,47 @@ if(isset($_GET["youtubelink"]) && !empty($_GET["youtubelink"]))
 
     if(!$exists)
     {
+        $options = Options::create()
+            // ->ffmpegLocation('/usr/local/bin/ffmpeg')
+            ->output('%(id)s.%(ext)s')
+            ->downloadPath(Config::DOWNLOAD_FOLDER)
+            ->url($youtubelink);
+
         if($format == 'mp3')
         {
-            $options = array(
-                'extract-audio' => true,
-                'audio-format' => 'mp3',
-                'audio-quality' => 0,
-                'output' => '%(id)s.%(ext)s',
-                //'ffmpeg-location' => '/usr/local/bin/ffmpeg'
-            );
+            $options = $options->extractAudio(true)
+                ->audioFormat('mp3')
+                ->audioQuality('0');
         }
         else
         {
-            $options = array(
-                'continue' => true,
-                'format' => 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'output' => '%(id)s.%(ext)s'
-            );
+            $options = $options->format('bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best');
         }
-
-        $dl = new YoutubeDl($options);
-        $dl->setDownloadPath(Config::DOWNLOAD_FOLDER);
     }
 
     try
     {
-        $url = $_SERVER['REQUEST_SCHEME'] . '://' . $_SERVER['HTTP_HOST'].dirname($_SERVER['PHP_SELF'])."/".Config::DOWNLOAD_FOLDER;
+        $dirname = dirname($_SERVER['PHP_SELF']);
+        $url = $_SERVER['REQUEST_SCHEME'] . '://' . $_SERVER['HTTP_HOST'] .
+            ($dirname == '/' ? '' : $dirname) . "/" .
+            Config::DOWNLOAD_FOLDER;
+
         if($exists)
             $file = $url.$id.".".$format;
-        else 
+        else
         {
-            $video = $dl->download($youtubelink);
+            $dl = new YoutubeDl();
+
+            //use yt-dlp if it's installed on the system, faster downloads and lot more improvements than youtube-dl
+            $ytdlp = (new ExecutableFinder())->find('yt-dlp');
+            if($ytdlp !== null)
+                $dl->setBinPath($ytdlp);
+            
+            $video = $dl->download($options)->getVideos()[0];
+
+            if($video->getError() !== null)
+                die(json_encode(array("error" => true, "message" => $video->getError())));
+
             $file = $url.$video->getFilename();
         }
 
@@ -140,5 +156,5 @@ else if(isset($_GET["delete"]) && !empty($_GET["delete"]))
     ));
 }
 else
-    echo json_encode(array("error" => true, "message" => "Invalid request"));
+    echo json_encode(array("error" => true, "message" => "Invalid request: missing 'youtubelink' parameter"));
 ?>
